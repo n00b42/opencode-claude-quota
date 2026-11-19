@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1127" height="897" viewBox="0 0 1127 897" role="img" aria-labelledby="title desc">
+  <title id="title">Claude quota in the OpenCode terminal interface</title>
+  <desc id="desc">Dark OpenCode terminal with Claude quota progress bars in the transcript and sidebar. The sidebar shows 12 percent of the five-hour quota used and 4 percent of the weekly quota used, alongside the local session summary.</desc>
+  <rect width="1127" height="897" fill="#090909"/>
+  <rect x="0" y="0" width="280" height="20" fill="#202020"/>
+  <text x="20" y="15" fill="#e5e5e5" font-family="monospace" font-size="13" font-weight="bold" letter-spacing="1">New session</text>
+  <text x="289" y="15" fill="#777" font-family="monospace" font-size="13">+</text>
+  <text x="37" y="55" fill="#777" font-family="monospace" font-size="14">◇ Claude quota (Claude Code credentials)</text>
+  <text x="55" y="76" fill="#858585" font-family="monospace" font-size="14">Session (5h)</text>
+  <text x="183" y="76" fill="#858585" font-family="monospace" font-size="14">[█░░░░░░░░░░░░░░░░░░░]</text>
+  <text x="400" y="76" fill="#858585" font-family="monospace" font-size="14">12% used · resets in 2h 41m</text>
+  <text x="55" y="97" fill="#858585" font-family="monospace" font-size="14">Weekly</text>
+  <text x="183" y="97" fill="#858585" font-family="monospace" font-size="14">[█░░░░░░░░░░░░░░░░░░░]</text>
+  <text x="400" y="97" fill="#858585" font-family="monospace" font-size="14">4% used · resets in 2d 23h</text>
+  <text x="55" y="119" fill="#858585" font-family="monospace" font-size="14">This session: 0 tokens (in 0 · out 0 · cache 0) · 0 requests · $0.0000</text>
+  <rect x="757" y="20" width="370" height="877" fill="#151515"/>
+  <text x="775" y="55" fill="#e5e5e5" font-family="monospace" font-size="14" font-weight="bold">New session - 2026-11-19T09:38:08.</text>
+  <text x="775" y="76" fill="#e5e5e5" font-family="monospace" font-size="14" font-weight="bold">289Z</text>
+  <text x="775" y="115" fill="#e5e5e5" font-family="monospace" font-size="14" font-weight="bold">Claude quota</text>
+  <text x="775" y="137" fill="#858585" font-family="monospace" font-size="14">5h</text>
+  <rect x="820" y="120" width="90" height="40" fill="#303030"/>
+  <rect x="820" y="120" width="9" height="20" fill="#858585"/>
+  <text x="929" y="137" fill="#858585" font-family="monospace" font-size="14">12% · 2h 41m</text>
+  <text x="775" y="159" fill="#858585" font-family="monospace" font-size="14">Week</text>
+  <rect x="820" y="140" width="90" height="20" fill="#303030"/>
+  <rect x="820" y="140" width="4" height="20" fill="#858585"/>
+  <text x="929" y="159" fill="#858585" font-family="monospace" font-size="14">4% · 2d 23h</text>
+  <rect x="13" y="800" width="727" height="91" fill="#202020"/>
+  <rect x="13" y="800" width="3" height="91" fill="#69a7ff"/>
+  <rect x="37" y="820" width="9" height="20" fill="#e5e5e5"/>
+  <text x="37" y="875" fill="#69a7ff" font-family="monospace" font-size="14">Build</text>
+  <text x="84" y="875" fill="#777" font-family="monospace" font-size="14">·</text>
+  <text x="101" y="875" fill="#e5e5e5" font-family="monospace" font-size="14">Opus 5.5</text>
+  <text x="189" y="875" fill="#777" font-family="monospace" font-size="14">Claude Agent</text>
+  <text x="318" y="875" fill="#777" font-family="monospace" font-size="14">·</text>
+  <text x="336" y="875" fill="#f2a43a" font-family="monospace" font-size="14" font-weight="bold">high</text>
+</svg>

@@ -1,284 +1,131 @@
 # OpenCode Claude Quota Plugin
 
-A plugin for [OpenCode](https://github.com/sst/opencode) that displays your **real Claude.ai subscription quota** with progress bars.
+An [OpenCode](https://github.com/anomalyco/opencode) plugin that shows your Claude subscription usage in the TUI and reports local token usage for each session.
 
-![Demo](demo.png)
+![Claude quota displayed in OpenCode](demo.svg)
 
 ## Features
 
-- **Real quota from Claude.ai** - Fetches actual session (5-hour) and weekly (7-day) usage
-- **Visual progress bars** - Shows usage at a glance
-- **CLI tool included** - Check quota from terminal without OpenCode
-- **Local session tracking** - Also tracks tokens in current session
+- **Live sidebar quota:** session (5-hour) and weekly usage, with progress bars and reset countdowns. Weekly Opus and Sonnet windows are shown when Claude provides them.
+- **Provider-aware display:** the sidebar is shown for `anthropic` and `claude-agent` models, and refreshes when you switch to one of them.
+- **Refresh and caching:** sidebar data refreshes every minute, after a completed turn, and when the model changes. Results are shared and cached; the plugin avoids repeated API requests. HTTP 429 responses trigger a five-minute backoff.
+- **`/quota` command:** displays a compact quota report and this OpenCode session's token and cost counters without requiring an assistant turn.
+- **`/quota-reset` command:** clears only the local counters for the current session; it does not change Claude's subscription usage.
+- **Model tools:** `quota` returns a detailed report, and `quotaReset` resets local session counters.
+- **Credential fallback:** uses OpenCode's active Anthropic OAuth connection, Claude Code credentials, or legacy OpenCode `auth.json` credentials.
+
+Local counters include input, output, reasoning, and cache tokens, request count, elapsed session time, and estimated cost. They are in-memory counters for the current OpenCode process, not Claude's billed usage.
 
 ## Requirements
 
-- [OpenCode](https://github.com/sst/opencode) with Claude OAuth authentication
-- Claude Pro or Max subscription
-- Node.js >= 18
+- OpenCode with the plugin API that supports server and TUI plugins.
+- A Claude account with OAuth credentials available through OpenCode or Claude Code.
+- Node.js 18 or newer to run the installer. OpenCode itself loads the TypeScript plugin files.
 
-## Installation
+## Install
 
-### Option 1: Plugin (for OpenCode)
+The plugin consists of **all three files in `src/`**. Keep them together in the `claude-quota` plugin directory: `server.ts`, `tui.tsx`, and `rpc.ts`. The server and TUI share the RPC contract through a relative import, so installing only one file (or copying them as a single renamed file) will not work.
 
-Copy the plugin file to your OpenCode project:
+### Recommended: installer
 
-```bash
-# Clone this repo
-git clone https://github.com/nguyenngothuong/opencode-claude-quota.git
+Clone the repository and run the installer:
 
-# Copy to your project's plugin directory
-mkdir -p .opencode/plugin
-cp opencode-claude-quota/src/index.ts .opencode/plugin/claude-quota.ts
+```sh
+git clone https://github.com/n00b42/opencode-claude-quota.git
+cd opencode-claude-quota
+node bin/install.mjs
 ```
 
-Or install globally for all projects:
+This copies all three source files to:
 
-```bash
-# Linux/macOS
-mkdir -p ~/.config/opencode/plugin
-cp src/index.ts ~/.config/opencode/plugin/claude-quota.ts
-
-# Windows (PowerShell)
-mkdir -Force "$env:USERPROFILE\.config\opencode\plugin"
-copy src\index.ts "$env:USERPROFILE\.config\opencode\plugin\claude-quota.ts"
+```text
+~/.config/opencode/plugins/claude-quota/
 ```
 
-### Option 2: CLI only (npm)
+To install somewhere else, pass the target plugin directory:
 
-```bash
-# Install globally
-npm install -g opencode-claude-quota
-
-# Or run directly with npx
-npx opencode-claude-quota
+```sh
+node bin/install.mjs --dest /path/to/opencode/plugins/claude-quota
 ```
 
-## Usage
+The installer also honors `OPENCODE_CONFIG_DIR` or `XDG_CONFIG_HOME` when choosing the default configuration directory. You can run `npm run install:local` from the repository as a shortcut.
 
-### In OpenCode
+### Manual install
 
-Use the `/quota` command or ask the assistant:
-
-```
-/quota
-```
-
-or
-
-```
-check my quota
+```sh
+mkdir -p ~/.config/opencode/plugins/claude-quota
+cp src/server.ts src/tui.tsx src/rpc.ts ~/.config/opencode/plugins/claude-quota/
 ```
 
-**Example output:**
+On Windows PowerShell, use the same files and the equivalent directory under your home folder, for example:
 
-```markdown
-## Claude Code Quota (from Claude.ai)
-
-### Session (5-hour window)
-[██░░░░░░░░░░░░░░░░░░] **8%** used | **92%** remaining
-Resets in: 3h 58m
-
-### Weekly (All Models)
-[██████░░░░░░░░░░░░░░] **28%** used | **72%** remaining
-Resets in: 5d 0h
-
-### Local Session Tracking
-| Metric | Value |
-|--------|-------|
-| Tokens Used | 15,234 |
-| Requests | 12 |
-| Session Time | 45 min |
-| Est. Cost | $0.0234 |
+```powershell
+$plugin = "$HOME\.config\opencode\plugins\claude-quota"
+New-Item -ItemType Directory -Force $plugin
+Copy-Item src\server.ts, src\tui.tsx, src\rpc.ts $plugin
 ```
 
-### CLI (Terminal)
+Restart OpenCode after installing or updating the plugin.
 
-```bash
-# If installed globally
-claude-quota
+## Use
 
-# Or with npx
-npx opencode-claude-quota
+### Sidebar
 
-# Or run directly
-node bin/cli.mjs
+Select an `anthropic` or `claude-agent` model. The **Claude quota** section appears in the session sidebar when data is available. It shows the 5-hour session and weekly quota, and includes per-model weekly windows when returned by Claude's API. The display is refreshed periodically and after completed turns; a stale-data notice appears if a refresh fails after a successful fetch.
+
+### Slash commands
+
+- `/quota` shows the latest Claude subscription quota and local counters for the current session.
+- `/quota-reset` resets the local counters for the current session only.
+
+These commands post the result directly into the session without asking the model to generate a response.
+
+### Assistant tools
+
+When appropriate, the assistant can also call:
+
+| Tool | Purpose |
+| --- | --- |
+| `quota` | Fetches and formats the Claude quota report, including local session tracking. |
+| `quotaReset` | Resets the current session's local token, request, and cost counters. |
+
+## Credentials and privacy
+
+Credentials are checked in this order:
+
+1. OpenCode's active `anthropic` OAuth integration.
+2. Claude Code's `~/.claude/.credentials.json` (or `$CLAUDE_CONFIG_DIR/.credentials.json`).
+3. Legacy OpenCode `auth.json`, including `$XDG_DATA_HOME/opencode/auth.json`, `~/.local/share/opencode/auth.json`, or the Windows OpenCode data location.
+
+The plugin reads credentials locally and sends the access token to Anthropic's `https://api.anthropic.com/api/oauth/usage` endpoint to retrieve quota. It does not refresh OAuth tokens; start Claude Code or re-authenticate in OpenCode if a token has expired. Local session counters are held in memory and are not written to disk.
+
+## Development and packaging
+
+```sh
+npm run install:local  # copy the three plugin files to the default OpenCode plugin directory
+node bin/install.mjs --help
 ```
 
-**CLI output:**
+The npm package metadata exposes `claude-quota-install` as an installer command and includes the `src/` plugin files. The old standalone quota CLI is not part of this plugin installation flow.
 
+Repository layout:
+
+```text
+src/
+  server.ts   # quota fetching, credentials, commands, tools, session counters, RPC server
+  tui.tsx     # sidebar display and refresh behavior
+  rpc.ts      # shared RPC contract
+bin/
+  install.mjs # installs all three source files together
 ```
-╔════════════════════════════════════════╗
-║      CLAUDE CODE QUOTA STATUS          ║
-╚════════════════════════════════════════╝
-
-📊 SESSION (5-hour window)
-   [██░░░░░░░░░░░░░░░░░░] 8% used
-   Remaining: 92%  Resets in: 3h 58m
-
-📈 WEEKLY (7-day rolling)
-   [██████░░░░░░░░░░░░░░] 28% used
-   Remaining: 72%  Resets in: 5d 0h
-
-──────────────────────────────────────────
-   Fetched at: 8:15:30 PM
-```
-
-## Available Tools
-
-| Tool | Description |
-|------|-------------|
-| `quota` | Check Claude.ai quota with progress bars |
-| `quotaReset` | Reset local session token counters |
-
-## How It Works
-
-### Architecture: 3 Independent Components
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    opencode-claude-quota                    │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  1. PLUGIN (.opencode/plugin/claude-quota.ts)               │
-│     └── Registers TOOL "quota" with OpenCode                │
-│         └── LLM calls this tool when user asks about quota  │
-│                                                             │
-│  2. COMMAND (.opencode/command/quota.md)                    │
-│     └── Slash command /quota                                │
-│         └── Just a prompt: "check my Claude quota"          │
-│         └── Triggers LLM → LLM calls quota tool             │
-│                                                             │
-│  3. CLI (bin/cli.mjs)                                       │
-│     └── Runs standalone from terminal                       │
-│         └── No OpenCode required                            │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Flow
-
-```
-User types "/quota" or "check my quota"
-        │
-        ▼
-┌───────────────────┐
-│  OpenCode (LLM)   │
-│  Claude/Gemini    │
-└────────┬──────────┘
-         │ LLM decides to call "quota" tool
-         ▼
-┌───────────────────┐
-│  PLUGIN           │
-│  claude-quota.ts  │
-└────────┬──────────┘
-         │ 1. Read auth.json (get access_token)
-         │ 2. Call Claude API: /api/oauth/usage
-         │ 3. Format result with progress bars
-         ▼
-┌───────────────────┐
-│  Return markdown  │
-│  display to user  │
-└───────────────────┘
-```
-
-### Component Summary
-
-| Component | File | Function |
-|-----------|------|----------|
-| **Plugin** | `claude-quota.ts` | Registers tool `quota` - LLM can call it |
-| **Command** | `quota.md` | Shortcut `/quota` → triggers LLM to ask about quota |
-| **CLI** | `cli.mjs` | Standalone terminal tool, no OpenCode needed |
-
-### Key Points
-
-- **Plugin** = registers a **tool** for LLM to use
-- **Command** = just a **prompt template**, no logic
-- **CLI** = **standalone**, copies logic from plugin
-
-When you type `/quota`:
-1. Command sends prompt "check quota" to LLM
-2. LLM sees tool `quota` available → calls tool
-3. Plugin runs, fetches API, returns result
-
-### Auth File Locations
-
-The plugin searches for `auth.json` in these locations:
-
-| Platform | Path |
-|----------|------|
-| Linux/macOS | `~/.local/share/opencode/auth.json` |
-| Windows | `%LOCALAPPDATA%\opencode\auth.json` |
-| XDG | `$XDG_DATA_HOME/opencode/auth.json` |
-
-## API Response Format
-
-The plugin expects this response from Claude's OAuth usage API:
-
-```json
-{
-  "five_hour": {
-    "utilization": 8.0,
-    "resets_at": "2025-01-20T16:59:59.631252+00:00"
-  },
-  "seven_day": {
-    "utilization": 28.0,
-    "resets_at": "2025-01-25T12:59:59.631274+00:00"
-  },
-  "seven_day_sonnet": {
-    "utilization": 3.0
-  }
-}
-```
-
-> Note: `utilization` is a percentage (0-100).
 
 ## Troubleshooting
 
-### "Could not fetch quota from Claude.ai"
-
-- Make sure you're logged in with Claude Pro/Max via OAuth in OpenCode
-- Check that `auth.json` exists and contains `anthropic.type: "oauth"`
-- Token might be expired - restart OpenCode to refresh
-
-### "API Error: 401"
-
-- Access token expired
-- Restart OpenCode to get a new token
-
-### Plugin not loading
-
-- Check OpenCode logs for `[claude-quota]` messages
-- Ensure file is in `.opencode/plugin/` or `~/.config/opencode/plugin/`
-- Restart OpenCode after adding the plugin
-
-## Project Structure
-
-```
-opencode-claude-quota/
-├── src/
-│   └── index.ts      # OpenCode plugin
-├── bin/
-│   └── cli.mjs       # CLI tool
-├── package.json
-├── LICENSE
-└── README.md
-```
-
-## Contributing
-
-```bash
-git clone https://github.com/nguyenngothuong/opencode-claude-quota.git
-cd opencode-claude-quota
-
-# Make changes to src/index.ts (plugin) or bin/cli.mjs (CLI)
-# Test by copying to .opencode/plugin/
-```
-
-## Related
-
-- [OpenCode](https://github.com/sst/opencode) - AI coding assistant
-- [Claude](https://claude.ai) - Anthropic's AI assistant
+- **Sidebar or commands are missing:** confirm all three files are in `~/.config/opencode/plugins/claude-quota/`, then restart OpenCode and check its plugin logs.
+- **No credentials found:** log in to Anthropic through OpenCode or Claude Code and confirm Claude Code credentials exist at the configured path.
+- **401 or expired token:** restart Claude Code or re-authenticate through OpenCode. This plugin intentionally does not rotate OAuth refresh tokens.
+- **Quota is unavailable or stale:** check connectivity to Anthropic's usage endpoint. A 429 response is followed by a five-minute request backoff.
+- **Sidebar not visible:** select a model from the `anthropic` or `claude-agent` provider.
 
 ## License
 

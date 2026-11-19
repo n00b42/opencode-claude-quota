@@ -1,14 +1,13 @@
 {
   "name": "opencode-claude-quota",
   "version": "1.0.0",
-  "description": "OpenCode plugin to display Claude.ai subscription quota with progress bars. Includes CLI tool.",
-  "main": "src/index.ts",
-  "bin": {
-    "claude-quota": "./bin/cli.mjs"
-  },
+  "description": "OpenCode plugin for Claude subscription quota, sidebar usage, and session token tracking.",
   "type": "module",
+  "bin": {
+    "claude-quota-install": "./bin/install.mjs"
+  },
   "scripts": {
-    "quota": "node bin/cli.mjs"
+    "install:local": "node bin/install.mjs"
   },
   "keywords": [
     "opencode",
@@ -17,31 +16,23 @@
     "quota",
     "usage",
     "rate-limit",
-    "plugin",
-    "cli"
+    "plugin"
   ],
-  "author": "nguyenngothuong",
+  "author": "n00b42",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nguyenngothuong/opencode-claude-quota.git"
+    "url": "git+https://github.com/n00b42/opencode-claude-quota.git"
   },
   "bugs": {
-    "url": "https://github.com/nguyenngothuong/opencode-claude-quota/issues"
+    "url": "https://github.com/n00b42/opencode-claude-quota/issues"
   },
-  "homepage": "https://github.com/nguyenngothuong/opencode-claude-quota#readme",
+  "homepage": "https://github.com/n00b42/opencode-claude-quota#readme",
   "engines": {
     "node": ">=18.0.0"
   },
   "files": [
     "src/",
-    "bin/"
-  ],
-  "peerDependencies": {
-    "@opencode-ai/plugin": "*"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0"
-  }
+    "bin/install.mjs"
+  ]
 }
