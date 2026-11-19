@@ -2,6 +2,8 @@
 
 An [OpenCode](https://github.com/anomalyco/opencode) plugin that shows your Claude subscription usage in the TUI and reports local token usage for each session.
 
+> **Fork and attribution:** This repository is a fork of [nguyenngothuong/opencode-claude-quota](https://github.com/nguyenngothuong/opencode-claude-quota), itself forked from that upstream project. I have since updated, fixed, and extended the plugin for the current OpenCode plugin API and added the sidebar quota display, credential fallbacks, session tracking, and installation tooling. Thanks to the original author for the starting point.
+
 ![Claude quota displayed in OpenCode](demo.svg)
 
 ## Features
