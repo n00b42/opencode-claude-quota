@@ -16,14 +16,15 @@
  *
  * The quota is also exposed through the `claude-quota` RPC (see rpc.ts) so the
  * TUI part (tui.tsx) can show it in the session sidebar. Results are cached
- * here, shared by every connected TUI, so the usage API is not polled more
- * than once per CACHE_TTL_MS no matter how many windows are open.
+ * here and in a shared cache file, so the usage API is not polled more than
+ * once per CACHE_TTL_MS no matter how many windows or OpenCode processes are
+ * open, and an HTTP 429 puts every process into (exponential) backoff.
  */
 
 import * as fs from "fs"
 import * as path from "path"
 import * as os from "os"
-import { ClaudeQuota, type QuotaStatus } from "./rpc.ts"
+import { ClaudeQuota, type QuotaStatus, type QuotaWindow } from "./rpc.ts"
 
 // ============================================================================
 // Types
@@ -148,10 +149,22 @@ async function getAccessTokens(ctx: any): Promise<AccessToken[]> {
 // Claude.ai API
 // ============================================================================
 
-async function fetchClaudeUsage(
-  token: string,
-  signal?: AbortSignal,
-): Promise<{ ok: true; data: ClaudeUsageResponse } | { ok: false; error: string }> {
+const FETCH_TIMEOUT_MS = 15_000
+
+type UsageFetch =
+  | { ok: true; data: ClaudeUsageResponse }
+  | { ok: false; error: string; status?: number; retryAfterMs?: number }
+
+/** Parses a Retry-After header (delta seconds or HTTP date) into ms. */
+function parseRetryAfter(value: string | null): number | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const date = Date.parse(value)
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now())
+}
+
+async function fetchClaudeUsage(token: string): Promise<UsageFetch> {
   try {
     const response = await fetch("https://api.anthropic.com/api/oauth/usage", {
       headers: {
@@ -159,9 +172,16 @@ async function fetchClaudeUsage(
         "Content-Type": "application/json",
         "anthropic-beta": "oauth-2025-04-20",
       },
-      signal,
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     })
-    if (!response.ok) return { ok: false, error: `HTTP ${response.status} ${response.statusText}` }
+    if (!response.ok) {
+      return {
+        ok: false,
+        status: response.status,
+        error: `HTTP ${response.status} ${response.statusText}`.trim(),
+        retryAfterMs: parseRetryAfter(response.headers.get("retry-after")),
+      }
+    }
     return { ok: true, data: (await response.json()) as ClaudeUsageResponse }
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -191,11 +211,18 @@ function formatTimeRemaining(resetTime: string | null | undefined): string {
   return `${minutes}m`
 }
 
-function formatWindow(title: string, usage: QuotaUsage | null | undefined): string {
-  const used = Math.round(usage?.utilization ?? 0)
-  return `### ${title}
-${formatProgressBar(used)} **${used}%** used | **${100 - used}%** remaining
-Resets in: ${formatTimeRemaining(usage?.resets_at)}`
+function formatWindow(window: QuotaWindow): string {
+  return `### ${window.title}
+${formatProgressBar(window.used)} **${window.used}%** used | **${100 - window.used}%** remaining
+Resets in: ${formatTimeRemaining(window.resetsAt)}`
+}
+
+function formatAge(epochMs: number | undefined): string {
+  if (!epochMs) return "unknown time"
+  const minutes = Math.floor((Date.now() - epochMs) / 60_000)
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes} min ago`
+  return `${Math.floor(minutes / 60)}h ${minutes % 60}m ago`
 }
 
 function formatLocal(state: LocalState | undefined): string {
@@ -224,9 +251,9 @@ const emptyInput = { type: "object", properties: {}, additionalProperties: false
 
 type QuotaResult =
   | { ok: true; source: string; quota: ClaudeUsageResponse }
-  | { ok: false; reason: string }
+  | { ok: false; reason: string; rateLimited?: boolean; retryAfterMs?: number }
 
-async function fetchQuota(ctx: any, signal?: AbortSignal): Promise<QuotaResult> {
+async function fetchQuota(ctx: any): Promise<QuotaResult> {
   const tokens = await getAccessTokens(ctx)
   if (tokens.length === 0) {
     return {
@@ -237,103 +264,172 @@ async function fetchQuota(ctx: any, signal?: AbortSignal): Promise<QuotaResult> 
   }
 
   const errors: string[] = []
+  let authFailed = false
   for (const token of tokens) {
-    const result = await fetchClaudeUsage(token.access, signal)
+    const result = await fetchClaudeUsage(token.access)
     if (result.ok) return { ok: true, source: token.source, quota: result.data }
+    if (result.status === 429) {
+      // Rate limits apply per account; the other tokens are almost always the
+      // same account, so trying them only burns more requests.
+      return {
+        ok: false,
+        rateLimited: true,
+        retryAfterMs: result.retryAfterMs,
+        reason: `Claude.ai usage API is rate-limiting requests (${token.source}: ${result.error}).`,
+      }
+    }
+    if (result.status === 401 || result.status === 403) authFailed = true
     const expired = token.expires && token.expires <= Date.now() ? " (token expired)" : ""
     errors.push(`${token.source}: ${result.error}${expired}`)
   }
-  return {
-    ok: false,
-    reason: `Could not fetch quota from Claude.ai (${errors.join("; ")}). If the token expired, start Claude Code (or re-login in OpenCode) to refresh it.`,
-  }
+  const hint = authFailed ? " The token may have expired: start Claude Code (or re-login in OpenCode) to refresh it." : ""
+  return { ok: false, reason: `Could not fetch quota from Claude.ai (${errors.join("; ")}).${hint}` }
 }
 
-function quotaWindows(quota: ClaudeUsageResponse): [string, QuotaUsage | null | undefined][] {
+function quotaWindows(quota: ClaudeUsageResponse): QuotaWindow[] {
   const windows: [string, QuotaUsage | null | undefined][] = [
     ["Session (5h)", quota.five_hour],
     ["Weekly", quota.seven_day],
   ]
   if (quota.seven_day_opus?.utilization != null) windows.push(["Weekly Opus", quota.seven_day_opus])
   if (quota.seven_day_sonnet?.utilization != null) windows.push(["Weekly Sonnet", quota.seven_day_sonnet])
-  return windows
+  return windows.map(([title, usage]) => ({
+    title,
+    used: Math.round(usage?.utilization ?? 0),
+    resetsAt: usage?.resets_at ?? null,
+  }))
 }
 
 // ============================================================================
-// Shared cache (used by the sidebar RPC, refreshed by every fetch)
+// Shared cache
+//
+// Every OpenCode process loads this plugin, and they all share one account
+// rate limit. The cache state is therefore also kept in a small file so that
+// all processes together fetch at most once per CACHE_TTL_MS and all of them
+// honour a 429 backoff. The file holds only usage numbers, never tokens.
 // ============================================================================
 
-const CACHE_TTL_MS = 60_000 // regular refresh interval
-const FORCE_MIN_MS = 15_000 // minimum age before a forced refresh refetches
-const RATE_LIMIT_BACKOFF_MS = 5 * 60_000 // after HTTP 429
+const CACHE_TTL_MS = 5 * 60_000 // regular refresh interval
+const FORCE_MIN_MS = 60_000 // minimum age before an explicit refresh (tool, /quota) refetches
+const BACKOFF_BASE_MS = 5 * 60_000 // first backoff after HTTP 429, doubled per consecutive 429
+const BACKOFF_MAX_MS = 60 * 60_000
 
-let cached: QuotaStatus = { ok: false, windows: [] }
-let lastAttempt = 0
-let notBefore = 0
+const SHARED_FILE = path.join(
+  process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"),
+  "opencode",
+  "claude-quota.json",
+)
+
+interface SharedState {
+  status: QuotaStatus
+  lastAttempt: number // epoch ms of the last fetch attempt (any process)
+  notBefore: number // epoch ms before which nobody may fetch (429 backoff)
+  rateLimitStreak: number // consecutive 429 responses
+}
+
+let state: SharedState = { status: { ok: false, windows: [] }, lastAttempt: 0, notBefore: 0, rateLimitStreak: 0 }
 let inFlight: Promise<QuotaStatus> | null = null
 let publish: (status: QuotaStatus) => void = () => {}
 
-/** Fold a fetch result into the cache; keeps the last good windows on failure. */
-function record(result: QuotaResult): QuotaStatus {
-  if (result.ok) {
-    cached = {
-      ok: true,
-      source: result.source,
-      fetchedAt: Date.now(),
-      windows: quotaWindows(result.quota).map(([title, usage]) => ({
-        title,
-        used: Math.round(usage?.utilization ?? 0),
-        resetsAt: usage?.resets_at ?? null,
-      })),
+/** Adopt the shared file's state if another process updated it more recently. */
+function loadShared(): void {
+  try {
+    const other = JSON.parse(fs.readFileSync(SHARED_FILE, "utf-8")) as SharedState
+    if (typeof other?.lastAttempt !== "number" || !other.status) return
+    if (other.lastAttempt > state.lastAttempt) {
+      const changed = other.status.fetchedAt !== state.status.fetchedAt || other.status.error !== state.status.error
+      state = other
+      if (changed) publish(state.status)
+    } else {
+      state.notBefore = Math.max(state.notBefore, other.notBefore || 0)
     }
-  } else {
-    if (/HTTP 429/.test(result.reason)) notBefore = Date.now() + RATE_LIMIT_BACKOFF_MS
-    cached = { ...cached, error: result.reason }
-  }
-  publish(cached)
-  return cached
+  } catch {}
 }
 
-async function fetchAndRecord(ctx: any, signal?: AbortSignal): Promise<QuotaResult> {
-  lastAttempt = Date.now()
-  const result = await fetchQuota(ctx, signal)
-  record(result)
-  return result
+function saveShared(): void {
+  try {
+    fs.mkdirSync(path.dirname(SHARED_FILE), { recursive: true })
+    const tmp = `${SHARED_FILE}.${process.pid}.tmp`
+    fs.writeFileSync(tmp, JSON.stringify(state))
+    fs.renameSync(tmp, SHARED_FILE)
+  } catch {}
 }
 
-async function cachedStatus(ctx: any, force: boolean): Promise<QuotaStatus> {
+/** Fold a fetch result into the cache; keeps the last good windows on failure. */
+function record(result: QuotaResult): void {
   const now = Date.now()
-  const age = now - lastAttempt
-  if (now < notBefore || age < (force ? FORCE_MIN_MS : CACHE_TTL_MS)) return cached
-  if (!inFlight) {
-    inFlight = fetchAndRecord(ctx)
-      .then(() => cached)
-      .finally(() => {
-        inFlight = null
-      })
+  if (result.ok) {
+    state.rateLimitStreak = 0
+    state.notBefore = 0
+    state.status = { ok: true, source: result.source, fetchedAt: now, windows: quotaWindows(result.quota) }
+  } else {
+    let reason = result.reason
+    if (result.rateLimited) {
+      state.rateLimitStreak += 1
+      const backoff = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** (state.rateLimitStreak - 1))
+      state.notBefore = now + Math.max(backoff, result.retryAfterMs ?? 0)
+      reason += ` Next try in ${Math.ceil((state.notBefore - now) / 60_000)} min.`
+    }
+    state.status = { ...state.status, error: reason }
   }
+  saveShared()
+  publish(state.status)
+}
+
+/**
+ * Returns the cached status, refetching only if it is older than `minAge`
+ * and no rate-limit backoff is active. Concurrent callers share one fetch.
+ */
+async function getStatus(ctx: any, minAge: number): Promise<QuotaStatus> {
+  if (inFlight) return inFlight
+  loadShared()
+  const now = Date.now()
+  if (now < state.notBefore || now - state.lastAttempt < minAge) return state.status
+
+  // Claim the slot in the shared file before fetching so other processes back off.
+  state.lastAttempt = now
+  saveShared()
+  inFlight = fetchQuota(ctx)
+    .then((result) => {
+      record(result)
+      return state.status
+    })
+    .finally(() => {
+      inFlight = null
+    })
   return inFlight
 }
 
-/** Markdown report for the model-facing `quota` tool. */
-async function buildReport(ctx: any, sessionID: string | undefined, signal?: AbortSignal): Promise<string> {
-  const local = formatLocal(sessionID ? sessions.get(sessionID) : undefined)
-  const result = await fetchAndRecord(ctx, signal)
-  if (!result.ok) {
-    return `## Claude Quota
-
-${result.reason}
-You can also check https://claude.ai/settings/usage.
-
----
-
-${local}`
+/** Text for the remote part of a report; `markdown` selects the tool vs. /quota format. */
+function describeStatus(status: QuotaStatus, markdown: boolean): { lines: string[]; ok: boolean } {
+  if (status.windows.length === 0) {
+    return { ok: false, lines: [status.error ?? "Quota not fetched yet."] }
   }
+  const lines: string[] = []
+  if (markdown) {
+    lines.push(...status.windows.map(formatWindow).join("\n\n").split("\n"))
+  } else {
+    const width = Math.max(...status.windows.map((w) => w.title.length))
+    for (const w of status.windows) {
+      lines.push(
+        `${w.title.padEnd(width)}  ${formatProgressBar(w.used)} ${String(w.used).padStart(3)}% used · resets in ${formatTimeRemaining(w.resetsAt)}`,
+      )
+    }
+  }
+  lines.push(`(fetched ${formatAge(status.fetchedAt)}${status.error ? `; last refresh failed: ${status.error}` : ""})`)
+  return { ok: true, lines }
+}
 
-  const sections = quotaWindows(result.quota).map(([title, usage]) => formatWindow(title, usage))
-  return `## Claude Quota (from Claude.ai, via ${result.source})
+/** Markdown report for the model-facing `quota` tool. */
+async function buildReport(ctx: any, sessionID: string | undefined): Promise<string> {
+  const local = formatLocal(sessionID ? sessions.get(sessionID) : undefined)
+  const status = await getStatus(ctx, FORCE_MIN_MS)
+  const { ok, lines } = describeStatus(status, true)
+  const heading = ok ? `## Claude Quota (from Claude.ai, via ${status.source})` : "## Claude Quota"
+  const extra = ok ? "" : "\nYou can also check https://claude.ai/settings/usage."
+  return `${heading}
 
-${sections.join("\n\n")}
+${lines.join("\n")}${extra}
 
 ---
 
@@ -349,16 +445,10 @@ async function buildPlainReport(ctx: any, sessionID: string | undefined): Promis
     `(in ${s.inputTokens.toLocaleString()} · out ${s.outputTokens.toLocaleString()} · ` +
     `cache ${s.cacheTokens.toLocaleString()}) · ${s.requests} requests · $${s.cost.toFixed(4)}`
 
-  const result = await fetchAndRecord(ctx)
-  if (!result.ok) return `Claude quota: ${result.reason}\n${localLine}`
-
-  const windows = quotaWindows(result.quota)
-  const width = Math.max(...windows.map(([title]) => title.length))
-  const lines = windows.map(([title, usage]) => {
-    const used = Math.round(usage?.utilization ?? 0)
-    return `${title.padEnd(width)}  ${formatProgressBar(used)} ${String(used).padStart(3)}% used · resets in ${formatTimeRemaining(usage?.resets_at)}`
-  })
-  return [`Claude quota (${result.source})`, ...lines, localLine].join("\n")
+  const status = await getStatus(ctx, FORCE_MIN_MS)
+  const { ok, lines } = describeStatus(status, false)
+  const heading = ok ? `Claude quota (${status.source})` : "Claude quota:"
+  return [heading, ...lines, localLine].join("\n")
 }
 
 function resetSession(sessionID: string | undefined): string {
@@ -407,7 +497,7 @@ export default {
           "Check your Claude subscription quota. Shows session (5-hour) and weekly usage with progress bars from the Claude.ai API, plus local token usage of this session.",
         input: emptyInput,
         execute: async (_input: unknown, context: any) => ({
-          content: await buildReport(ctx, context?.sessionID, context?.signal),
+          content: await buildReport(ctx, context?.sessionID),
         }),
       })
 
@@ -449,7 +539,8 @@ export default {
     let registration: any
     try {
       registration = await ctx.rpc.register(ClaudeQuota, {
-        status: async (input: unknown) => cachedStatus(ctx, (input as { force?: boolean } | undefined)?.force === true),
+        status: async (input: unknown) =>
+          getStatus(ctx, (input as { force?: boolean } | undefined)?.force === true ? FORCE_MIN_MS : CACHE_TTL_MS),
       })
       publish = (status) => {
         try {
